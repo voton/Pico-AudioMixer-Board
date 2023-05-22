@@ -2,119 +2,75 @@ import time
 import math
 
 import board
-import busio
 import usb_hid
 import digitalio
-from analogio import AnalogIn
 
-from adafruit_hid.keycode import Keycode
-from adafruit_hid.keyboard import Keyboard
+from analogio import AnalogIn
 from adafruit_hid.consumer_control import ConsumerControl
 from adafruit_hid.consumer_control_code import ConsumerControlCode
 
-from lcd import i2c_pcf8574_interface, lcd
-
-
 import supervisor
 
-LAST_MESSAGE = None
-
-TIMER = 0
-LINE = 0
-
-def init_LCD():
-    i2c = busio.I2C(scl=board.GP1, sda=board.GP0)
-    i2c = i2c_pcf8574_interface.I2CPCF8574Interface(i2c, 0x27)
-
-    display = lcd.LCD(i2c, num_rows=2, num_cols=16)
-    display.set_backlight(True)
-    display.set_display_enabled(True)
+def initButtons():
+    GPIO = [board.IO3, board.IO5, board.IO7]
+    BIND = [ConsumerControlCode.SCAN_PREVIOUS_TRACK,
+            ConsumerControlCode.PLAY_PAUSE,
+            ConsumerControlCode.SCAN_NEXT_TRACK]
     
-    return display
-
-def init_custom_charset():
-    square = [0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F, 0x1F]
-
-    display.create_char(0, square)
-
-def LCD_print(text):
-    global LAST_MESSAGE
-    if text != LAST_MESSAGE:
+    temp = []
+    for num in range(len(GPIO)):
+        BTN = digitalio.DigitalInOut(GPIO[num])
+        BTN.direction = digitalio.Direction.INPUT
+        BTN.pull = digitalio.Pull.DOWN
         
-        print('refresh')
-        
-        display.clear()
-        display.print(text)
-        LAST_MESSAGE = text
-        time.sleep(.1)
+        temp.append([BTN, BIND[num]])
+    return temp
 
-def LCD_message(POTS):    
-    global TIMER
-    global LINE
-    
-    TIMER += 1
-    if TIMER >= 10:
-        LINE += 1
-        TIMER = 0
-        
-        if LINE >= len(POTS): LINE = 0
-    
-    msg = f"{POTS[LINE][1]}\n"
-    
-    value = round(round(((POTS[LINE][0].value - 320) / (65535 - 320)) * 10) * 1.6)
-    for x in range(value): msg += '\x00'
+def initPots():
+    GPIO = [board.IO1, board.IO2, board.IO4, board.IO6]
+    lines = ["Line_one", "Line_two", "Line_three", "Line_four"]
 
-    LCD_print(str(msg))	
+    temp = []
+    for x in range(len(GPIO)):
+        POT = AnalogIn(GPIO[x])
+        temp.append([POT, None, lines[x]])
+    
+    return temp
+
+def initConnect(POTS):
+    for POT in POTS:
+        value = round(((POT[0].value) / 52070) * 100)
+        print(f"{POT[2]}: {value}")
 
 
 LED = digitalio.DigitalInOut(board.LED)
 LED.direction = digitalio.Direction.OUTPUT
 
-BTNS = [board.GP15, board.GP14, board.GP13]
+CC = ConsumerControl(usb_hid.devices)
+BTNS = initButtons()
+POTS = initPots()
 
-for x in range(len(BTNS)):
-            BTNS[x] = digitalio.DigitalInOut(BTNS[x])
-            BTNS[x].direction = digitalio.Direction.INPUT
-            BTNS[x].pull = digitalio.Pull.DOWN
-
-keyboard = Keyboard(usb_hid.devices)
-consumer_control = ConsumerControl(usb_hid.devices)
-
-POTS = [[AnalogIn(board.GP26), 'Other'],
-        [AnalogIn(board.GP27), 'Music'],
-        [AnalogIn(board.GP28), 'Browsers']]
-
-
-display = init_LCD()
-init_custom_charset()
+Connected = False
 
 while True:
     Connection = supervisor.runtime.serial_connected
-    LED.value = Connection
+    LED.value = Connected
 
-    LCD_message(POTS)
-
-    if Connection:    
-        message = ""
-
-        for POT in POTS:
-            value = round(((POT[0].value - 320) / (65535 - 320)) * 100)
-            # print(f" - {POT[1]}: {value}\n")
-
-            message += f" - {POT[1]}: {value}\n"
-        print(message)
-
-        if BTNS[0].value:
-            consumer_control.send(ConsumerControlCode.SCAN_PREVIOUS_TRACK)
-            time.sleep(.001)
-        if BTNS[1].value:
-            consumer_control.send(ConsumerControlCode.PLAY_PAUSE)
-            time.sleep(.001)
-        if BTNS[2].value: 
-            consumer_control.send(ConsumerControlCode.SCAN_NEXT_TRACK)
-            time.sleep(.001)
+    if Connection:
+        if not Connected:
+            initConnect(POTS)
+            Connected = True
         
-        time.sleep(.5)
-    else:
-        time.sleep(5)
+        for POT in POTS:
+            value = round(((POT[0].value) / 52070) * 100)
+            if value != POT[1]:
+                POT[1] = value
+                print(f"{POT[2]}: {value}")
 
+        for Button in BTNS:
+            if Button[0].value:
+                CC.send(Button[1])
+                time.sleep(0.4)
+    else:
+        if Connected: Connected = False
+        time.sleep(2)
